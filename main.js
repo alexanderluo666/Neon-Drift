@@ -4,11 +4,73 @@ const ctx = canvas.getContext("2d");
 canvas.width = innerWidth;
 canvas.height = innerHeight;
 
+window.addEventListener("resize", resizeCanvas);
+
+let audioContext = null;
+let engineOscillator = null;
+let engineGain = null;
+let boostSoundCooldown = 0;
+
+function resizeCanvas(){
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+}
+
 // =====================
 // INPUT
 // =====================
 let keys = {};
-window.addEventListener("keydown", e => keys[e.key.toLowerCase()] = true);
+window.addEventListener("keydown", e => {
+    if(!audioContext) initAudio();
+    keys[e.key.toLowerCase()] = true;
+    if(gameState === 'menu'){
+        if(e.key === 'ArrowLeft'){
+            menuPage = Math.max(0, menuPage - 1);
+        }
+        if(e.key === 'ArrowRight'){
+            menuPage = Math.min(2, menuPage + 1);
+        }
+        if(e.key === 'ArrowUp'){
+            if(menuPage === 0){
+                selectedMode = Math.max(0, selectedMode - 1);
+            } else if(menuPage === 1){
+                selectedMap = Math.max(0, selectedMap - 1);
+            } else {
+                selectedCar = Math.max(0, selectedCar - 1);
+            }
+        }
+        if(e.key === 'ArrowDown'){
+            if(menuPage === 0){
+                selectedMode = Math.min(modes.length - 1, selectedMode + 1);
+            } else if(menuPage === 1){
+                selectedMap = Math.min(maps.length - 1, selectedMap + 1);
+            } else {
+                selectedCar = Math.min(cars.length - 1, selectedCar + 1);
+            }
+        }
+        if(e.key === 'Enter'){
+            let car = cars[selectedCar];
+            playerCar.color = car.color;
+            playerCar.accel = car.accel;
+            playerCar.turn = car.turn;
+            playerCar.maxSpeed = car.maxSpeed;
+            if(modes[selectedMode].multiplayer){
+                playerCar2.color = '#ff55ff';
+                playerCar2.accel = 0.28;
+                playerCar2.turn = 0.045;
+                playerCar2.maxSpeed = 9;
+            }
+            level = 1;
+            currentMapIndex = selectedMap;
+            resetPlayers();
+            initMap(currentMapIndex);
+            gameState = 'playing';
+            spawnBots();
+            if(engineOscillator) engineOscillator.frequency.value = 120;
+            playTone(440, 0.12, 'triangle');
+        }
+    }
+});
 window.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
 
 // =====================
@@ -17,269 +79,624 @@ window.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
 let cam = { x: 0, y: 0 };
 
 // =====================
-// CAR
+// GAME STATE
 // =====================
-let car = {
-    x: 0, y: 0,
-    vx: 0, vy: 0,
+let gameState = 'menu'; // 'menu', 'playing'
+let level = 1;
+let score = 0;
+let selectedMode = 1;
+let selectedMap = 0;
+let selectedCar = 0;
+let menuPage = 0;
+let currentMapIndex = 0;
+let levelTarget = 8000;
+
+// =====================
+// GAME MODES
+// =====================
+const modes = [
+    { name: 'Single Player', ai: false, multiplayer: false },
+    { name: 'AI Race', ai: true, multiplayer: false },
+    { name: 'Multiplayer', ai: false, multiplayer: true }
+];
+
+// =====================
+// MAPS
+// =====================
+const maps = [
+    {
+        name: 'Neon City',
+        roadFunc: x => Math.sin(x*0.01)*220 + Math.sin(x*0.003)*320,
+        finish: 8000,
+        aiSpeed: 0.25,
+        aiCount: 2,
+        roadColor: '#111122',
+        edgeColor: '#00ffff',
+        centerColor: '#ffffff',
+        poleColor: '#ff00ff'
+    },
+    {
+        name: 'Cyber Canyon',
+        roadFunc: x => Math.sin(x*0.008)*260 + Math.cos(x*0.004)*380,
+        finish: 9000,
+        aiSpeed: 0.3,
+        aiCount: 3,
+        roadColor: '#120018',
+        edgeColor: '#66ffcc',
+        centerColor: '#ff0088',
+        poleColor: '#88ccff'
+    },
+    {
+        name: 'Voltage Ridge',
+        roadFunc: x => Math.sin(x*0.02)*140 + Math.sin(x*0.01)*260 + Math.cos(x*0.0015)*120,
+        finish: 10000,
+        aiSpeed: 0.35,
+        aiCount: 4,
+        roadColor: '#101014',
+        edgeColor: '#ffdd00',
+        centerColor: '#ffffff',
+        poleColor: '#44ff88'
+    }
+];
+
+// =====================
+// CARS
+// =====================
+const cars = [
+    { name: 'Neon', color: '#00ffff', accel: 0.3, turn: 0.04, maxSpeed: 10 },
+    { name: 'Fire', color: '#ff6600', accel: 0.35, turn: 0.03, maxSpeed: 12 },
+    { name: 'Ghost', color: '#ffffff', accel: 0.25, turn: 0.05, maxSpeed: 8 },
+    { name: 'Shadow', color: '#6600ff', accel: 0.28, turn: 0.045, maxSpeed: 9 }
+];
+
+// =====================
+// PLAYER CARS
+// =====================
+const playerCar = {
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
     angle: 0,
-    boost: 0
+    boost: 100,
+    color: "#00ffff",
+    accel: 0.3,
+    turn: 0.04,
+    maxSpeed: 10
+};
+
+const playerCar2 = {
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    angle: 0,
+    boost: 100,
+    color: "#ff00ff",
+    accel: 0.28,
+    turn: 0.045,
+    maxSpeed: 9
 };
 
 // =====================
-// GAME STATE
+// AI CARS
 // =====================
-let score = 0;
-let combo = 1;
-let driftTimer = 0;
-let drifting = false;
+let bots = [];
 
 // =====================
-// TRAILS
+// PARTICLES
 // =====================
-let trails = [];
+let particles = [];
+
+// =====================
+// STARS
+// =====================
+let stars = [];
+for(let i=0;i<200;i++){
+    stars.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        brightness: Math.random()
+    });
+}
+
+function randomAIColor(){
+    // ensures NOT same as player color
+    let hue = Math.floor(Math.random() * 360);
+    return `hsl(${hue},100%,60%)`;
+}
+
+function initMap(index){
+    currentMapIndex = index % maps.length;
+    let map = maps[currentMapIndex];
+    levelTarget = playerCar.x + map.finish;
+}
+
+function resetPlayers(){
+    playerCar.x = 0;
+    playerCar.y = roadY(0);
+    playerCar.vx = 0;
+    playerCar.vy = 0;
+    playerCar.angle = 0;
+    playerCar.boost = 100;
+
+    playerCar2.x = -40;
+    playerCar2.y = roadY(playerCar2.x);
+    playerCar2.vx = 0;
+    playerCar2.vy = 0;
+    playerCar2.angle = 0;
+    playerCar2.boost = 100;
+}
+
+function spawnBots(){
+    bots = [];
+    let map = maps[currentMapIndex];
+    let mode = modes[selectedMode];
+    let aiCount = mode.ai ? map.aiCount : 0;
+
+    for(let i=0;i<aiCount;i++){
+        bots.push({
+            x: playerCar.x - 300 - i*100,
+            y: playerCar.y,
+            vx: 0,
+            vy: 0,
+            angle: 0,
+            color: randomAIColor()
+        });
+    }
+}
 
 // =====================
 // ROAD
 // =====================
-const ROAD_WIDTH = 200;
+const ROAD_WIDTH = 220;
 
 function roadY(x){
-    return Math.sin(x*0.01)*200 + Math.sin(x*0.003)*400;
+    return maps[currentMapIndex % maps.length].roadFunc(x);
 }
 
 // =====================
-// AUDIO SYSTEM
+// EFFECT SETTINGS
 // =====================
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const FX = {
+    roadGlow: "#ff00ff",
+    playerGlow: "#00ffff",
+    penalty: 0.88
+};
 
-let engineOsc = audioCtx.createOscillator();
-let engineGain = audioCtx.createGain();
+// =====================
+// DRAW BACKGROUND
+// =====================
+function drawBackground(){
+    let gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#00101f');
+    gradient.addColorStop(0.5, '#000011');
+    gradient.addColorStop(1, '#02020a');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
 
-engineOsc.type = "sawtooth";
-engineOsc.connect(engineGain);
-engineGain.connect(audioCtx.destination);
-
-engineGain.gain.value = 0.05;
-engineOsc.start();
-
-// drift noise
-let noise = audioCtx.createBufferSource();
-let noiseBuffer = audioCtx.createBuffer(1, 44100, 44100);
-let data = noiseBuffer.getChannelData(0);
-
-for(let i=0;i<data.length;i++){
-    data[i] = Math.random()*2-1;
+    ctx.fillStyle = '#ffffff';
+    stars.forEach(s => {
+        ctx.globalAlpha = s.brightness * 0.8;
+        ctx.fillRect(s.x, s.y, 1, 1);
+    });
+    ctx.globalAlpha = 1;
 }
 
-noise.buffer = noiseBuffer;
+function drawMapObjects(){
+    let map = maps[currentMapIndex % maps.length];
+    ctx.fillStyle = map.poleColor;
+    for(let worldX = Math.floor((cam.x - canvas.width) / 180) * 180; worldX < cam.x + canvas.width; worldX += 180){
+        let y = roadY(worldX);
+        let sx = worldX - cam.x + canvas.width/2;
+        let sy = y - cam.y + canvas.height/2;
 
-let noiseGain = audioCtx.createGain();
-noise.connect(noiseGain);
-noiseGain.connect(audioCtx.destination);
-noise.loop = true;
-noiseGain.gain.value = 0;
-noise.start();
+        ctx.fillRect(sx - ROAD_WIDTH/2 - 18, sy - 18, 8, 36);
+        ctx.fillRect(sx + ROAD_WIDTH/2 + 10, sy - 18, 8, 36);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(sx - ROAD_WIDTH/2 - 22, sy - 4, 16, 8);
+        ctx.fillRect(sx + ROAD_WIDTH/2 + 6, sy - 4, 16, 8);
+        ctx.fillStyle = map.poleColor;
+    }
+}
+
+function updateStars(){
+    stars.forEach(s => {
+        s.y += 0.25 + Math.abs(playerCar.vx) * 0.01;
+        if(s.y > canvas.height) s.y = 0;
+    });
+}
+
+function initAudio(){
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    engineGain = audioContext.createGain();
+    engineGain.gain.value = 0.02;
+    engineGain.connect(audioContext.destination);
+    engineOscillator = audioContext.createOscillator();
+    engineOscillator.type = 'sawtooth';
+    engineOscillator.frequency.value = 80;
+    engineOscillator.connect(engineGain);
+    engineOscillator.start();
+}
+
+function playTone(freq, duration, type = 'sine'){
+    if(!audioContext) return;
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.value = 0.1;
+    osc.connect(gain);
+    gain.connect(audioContext.destination);
+    osc.start();
+    osc.stop(audioContext.currentTime + duration);
+}
+
+function updateEngineSound(){
+    if(!engineOscillator) return;
+    let speed = Math.hypot(playerCar.vx, playerCar.vy);
+    engineOscillator.frequency.value = 80 + speed * 12;
+    engineGain.gain.value = 0.02 + Math.min(0.08, speed * 0.003);
+}
 
 // =====================
-// PHYSICS
+// UPDATE PLAYER
 // =====================
-function updateCar(){
+function updatePlayer(){
 
-    const accel = 0.3;
-    const turnSpeed = 0.04;
     const friction = 0.98;
-    const driftFactor = 0.9;
 
-    let fx = Math.cos(car.angle);
-    let fy = Math.sin(car.angle);
+    let fx = Math.cos(playerCar.angle);
+    let fy = Math.sin(playerCar.angle);
 
     if(keys["w"]){
-        car.vx += fx * accel;
-        car.vy += fy * accel;
+        playerCar.vx += fx * playerCar.accel;
+        playerCar.vy += fy * playerCar.accel;
     }
 
     if(keys["s"]){
-        car.vx -= fx * accel * 0.5;
-        car.vy -= fy * accel * 0.5;
+        playerCar.vx -= fx * playerCar.accel * 0.5;
+        playerCar.vy -= fy * playerCar.accel * 0.5;
     }
+
+    let speed = Math.hypot(playerCar.vx, playerCar.vy);
+
+    if(keys["a"]) playerCar.angle -= playerCar.turn * speed * 0.1;
+    if(keys["d"]) playerCar.angle += playerCar.turn * speed * 0.1;
 
     // BOOST
-    if(keys[" "] && car.boost > 0){
-        car.vx += fx * 0.6;
-        car.vy += fy * 0.6;
-        car.boost -= 0.5;
-    }
-
-    let speed = Math.hypot(car.vx, car.vy);
-
-    if(keys["a"]) car.angle -= turnSpeed * speed * 0.1;
-    if(keys["d"]) car.angle += turnSpeed * speed * 0.1;
-
-    let rightX = Math.cos(car.angle + Math.PI/2);
-    let rightY = Math.sin(car.angle + Math.PI/2);
-
-    let lateral = car.vx * rightX + car.vy * rightY;
-
-    drifting = Math.abs(lateral) > 1.2;
-
-    if(drifting){
-        driftTimer++;
-        combo += 0.01;
-        score += Math.abs(lateral) * combo * 0.1;
-
-        trails.push({x:car.x,y:car.y,life:1});
-        car.boost += 0.02;
+    if(keys["shift"] && playerCar.boost > 0){
+        playerCar.vx *= 1.05;
+        playerCar.vy *= 1.05;
+        playerCar.boost -= 0.5;
+        // add particle
+        particles.push({
+            x: playerCar.x - fx*15,
+            y: playerCar.y - fy*15,
+            vx: -fx * 2 + (Math.random()-0.5)*0.5,
+            vy: -fy * 2 + (Math.random()-0.5)*0.5,
+            life: 30,
+            color: playerCar.color
+        });
     } else {
-        if(driftTimer > 10) combo = 1;
-        driftTimer = 0;
+        playerCar.boost = Math.min(100, playerCar.boost + 0.2);
     }
 
-    car.vx -= lateral * rightX * (1 - driftFactor);
-    car.vy -= lateral * rightY * (1 - driftFactor);
+    // SPEED LIMIT
+    if(speed > playerCar.maxSpeed){
+        playerCar.vx *= 0.95;
+        playerCar.vy *= 0.95;
+    }
 
-    let dist = Math.abs(car.y - roadY(car.x));
+    // OFFROAD PENALTY
+    let dist = Math.abs(playerCar.y - roadY(playerCar.x));
     if(dist > ROAD_WIDTH/2){
-        car.vx *= 0.93;
-        car.vy *= 0.93;
+        playerCar.vx *= FX.penalty;
+        playerCar.vy *= FX.penalty;
     }
 
-    car.vx *= friction;
-    car.vy *= friction;
+    playerCar.vx *= friction;
+    playerCar.vy *= friction;
 
-    car.x += car.vx;
-    car.y += car.vy;
+    playerCar.x += playerCar.vx;
+    playerCar.y += playerCar.vy;
 
-    // =====================
-    // SOUND UPDATE
-    // =====================
-    engineOsc.frequency.value = 100 + speed * 10;
-    noiseGain.gain.value = drifting ? 0.05 : 0;
+    score += Math.max(0, speed * 0.05);
+
+    // LEVEL UP
+    if(playerCar.x > levelTarget){
+        level++;
+        currentMapIndex++;
+        initMap(currentMapIndex);
+        spawnBots();
+    }
+}
+
+function updatePlayer2(){
+    const friction = 0.98;
+
+    let fx = Math.cos(playerCar2.angle);
+    let fy = Math.sin(playerCar2.angle);
+
+    if(keys["arrowup"]){
+        playerCar2.vx += fx * playerCar2.accel;
+        playerCar2.vy += fy * playerCar2.accel;
+    }
+
+    if(keys["arrowdown"]){
+        playerCar2.vx -= fx * playerCar2.accel * 0.5;
+        playerCar2.vy -= fy * playerCar2.accel * 0.5;
+    }
+
+    let speed = Math.hypot(playerCar2.vx, playerCar2.vy);
+
+    if(keys["arrowleft"]) playerCar2.angle -= playerCar2.turn * speed * 0.1;
+    if(keys["arrowright"]) playerCar2.angle += playerCar2.turn * speed * 0.1;
+
+    // SPEED LIMIT
+    if(speed > playerCar2.maxSpeed){
+        playerCar2.vx *= 0.95;
+        playerCar2.vy *= 0.95;
+    }
+
+    let dist = Math.abs(playerCar2.y - roadY(playerCar2.x));
+    if(dist > ROAD_WIDTH/2){
+        playerCar2.vx *= FX.penalty;
+        playerCar2.vy *= FX.penalty;
+    }
+
+    playerCar2.vx *= friction;
+    playerCar2.vy *= friction;
+
+    playerCar2.x += playerCar2.vx;
+    playerCar2.y += playerCar2.vy;
+}
+
+// =====================
+// AI UPDATE (FIXED COLOR + SIMPLE FOLLOW ROAD)
+// =====================
+function updateBots(){
+
+    let map = maps[currentMapIndex % maps.length];
+    let aiSpeed = map.aiSpeed;
+
+    bots.forEach(b => {
+
+        let tx = b.x + 200;
+        let ty = roadY(tx);
+
+        let dx = tx - b.x;
+        let dy = ty - b.y;
+
+        let targetAngle = Math.atan2(dy, dx);
+
+        b.angle += (targetAngle - b.angle) * 0.05;
+
+        b.vx += Math.cos(b.angle) * aiSpeed;
+        b.vy += Math.sin(b.angle) * aiSpeed;
+
+        b.vx *= 0.97;
+        b.vy *= 0.97;
+
+        b.x += b.vx;
+        b.y += b.vy;
+    });
 }
 
 // =====================
 // CAMERA
 // =====================
 function updateCamera(){
-    cam.x += (car.x - cam.x)*0.08;
-    cam.y += (car.y - cam.y)*0.08;
+    cam.x += (playerCar.x - cam.x) * 0.08;
+    cam.y += (playerCar.y - cam.y) * 0.08;
 }
 
 // =====================
-// CITY GENERATION
-// =====================
-function buildingHeight(x){
-    return (Math.sin(x*0.002)+1)*200 + 100;
-}
-
-// =====================
-// DRAW CITY
-// =====================
-function drawCity(){
-
-    let baseY = canvas.height/2 - (cam.y + 400);
-
-    for(let i=-20;i<20;i++){
-
-        let worldX = Math.floor((cam.x/200)+i)*200;
-        let screenX = worldX - cam.x + canvas.width/2;
-
-        let h = buildingHeight(worldX);
-
-        ctx.fillStyle = "#050505";
-        ctx.fillRect(screenX, baseY - h, 180, h);
-
-        // neon edges
-        ctx.strokeStyle = "#0ff";
-        ctx.strokeRect(screenX, baseY - h, 180, h);
-    }
-}
-
-// =====================
-// GLOW
-// =====================
-function glow(color, blur){
-    ctx.shadowColor = color;
-    ctx.shadowBlur = blur;
-}
-
-// =====================
-// ROAD
+// ROAD DRAW
 // =====================
 function drawRoad(){
+    let map = maps[currentMapIndex % maps.length];
 
     ctx.beginPath();
 
-    for(let px=0;px<canvas.width;px++){
-        let worldX = cam.x + (px - canvas.width/2);
-        let center = roadY(worldX);
+    for(let x=0;x<canvas.width;x++){
+        let wx = cam.x + (x - canvas.width/2);
+        let y = roadY(wx);
 
-        let top = center - ROAD_WIDTH/2;
-        let screenTop = top - cam.y + canvas.height/2;
+        let top = y - ROAD_WIDTH/2;
+        let sy = top - cam.y + canvas.height/2;
 
-        if(px===0) ctx.moveTo(px,screenTop);
-        else ctx.lineTo(px,screenTop);
+        if(x===0) ctx.moveTo(x,sy);
+        else ctx.lineTo(x,sy);
     }
 
-    for(let px=canvas.width-1;px>=0;px--){
-        let worldX = cam.x + (px - canvas.width/2);
-        let center = roadY(worldX);
+    for(let x=canvas.width-1;x>=0;x--){
+        let wx = cam.x + (x - canvas.width/2);
+        let y = roadY(wx);
 
-        let bottom = center + ROAD_WIDTH/2;
-        let screenBottom = bottom - cam.y + canvas.height/2;
+        let bottom = y + ROAD_WIDTH/2;
+        let sy = bottom - cam.y + canvas.height/2;
 
-        ctx.lineTo(px,screenBottom);
+        ctx.lineTo(x,sy);
     }
 
     ctx.closePath();
-
-    ctx.fillStyle = "#111";
+    ctx.fillStyle = map.roadColor;
     ctx.fill();
 
-    glow("#ff00ff",15);
-    ctx.strokeStyle = "#ff00ff";
+    ctx.shadowColor = map.edgeColor;
+    ctx.shadowBlur = 18;
+    ctx.strokeStyle = map.edgeColor;
     ctx.lineWidth = 3;
     ctx.stroke();
 
+    ctx.strokeStyle = map.centerColor;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([12, 12]);
+    ctx.beginPath();
+    for(let x=0;x<canvas.width;x++){
+        let wx = cam.x + (x - canvas.width/2);
+        let y = roadY(wx);
+        let sy = y - cam.y + canvas.height/2;
+        if(x===0) ctx.moveTo(x,sy);
+        else ctx.lineTo(x,sy);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
     ctx.shadowBlur = 0;
 }
 
 // =====================
-// TRAILS
+// DRAW CAR (GLOW FIXED)
 // =====================
-function drawTrails(){
-    trails.forEach(t=>{
-        let x = t.x - cam.x + canvas.width/2;
-        let y = t.y - cam.y + canvas.height/2;
+function drawCar(obj, color){
 
-        glow("#00ffff",10);
-        ctx.fillRect(x,y,3,3);
-
-        t.life -= 0.02;
-    });
-
-    trails = trails.filter(t=>t.life>0);
-    ctx.shadowBlur = 0;
-}
-
-// =====================
-// CAR
-// =====================
-function drawCar(){
-
-    let x = car.x - cam.x + canvas.width/2;
-    let y = car.y - cam.y + canvas.height/2;
+    let x = obj.x - cam.x + canvas.width/2;
+    let y = obj.y - cam.y + canvas.height/2;
 
     ctx.save();
     ctx.translate(x,y);
-    ctx.rotate(car.angle);
+    ctx.rotate(obj.angle);
 
-    glow("#00ffff",20);
-    ctx.fillStyle = "#00ffff";
-    ctx.fillRect(-10,-5,20,10);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 18;
+
+    ctx.fillStyle = color;
+    // body
+    ctx.fillRect(-12,-6,24,12);
+    // front
+    ctx.fillRect(10,-4,6,8);
+    // wheels
+    ctx.fillRect(-10,-8,4,4);
+    ctx.fillRect(6,-8,4,4);
+    ctx.fillRect(-10,4,4,4);
+    ctx.fillRect(6,4,4,4);
 
     ctx.restore();
+
     ctx.shadowBlur = 0;
+}
+
+// =====================
+// DRAW PARTICLES
+// =====================
+function drawParticles(){
+    particles.forEach(p => {
+        let x = p.x - cam.x + canvas.width/2;
+        let y = p.y - cam.y + canvas.height/2;
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life / 30;
+        ctx.fillRect(x - 1, y - 1, 2, 2);
+    });
+    ctx.globalAlpha = 1;
+}
+
+// =====================
+// UPDATE PARTICLES
+// =====================
+function updateParticles(){
+    particles = particles.filter(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+        return p.life > 0;
+    });
+}
+
+// =====================
+// DRAW MENU
+// =====================
+function drawMenu(){
+    ctx.fillStyle = "#000011";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    ctx.fillStyle = "#00ffff";
+    ctx.font = "48px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("Neon Drift", canvas.width/2, 100);
+
+    ctx.font = "22px monospace";
+    ctx.fillText("Use Left/Right to switch screen, Up/Down to change selection", canvas.width/2, 150);
+    ctx.fillText("Press Enter to start after selecting car", canvas.width/2, 180);
+
+    const pageTitles = ["Mode Select", "Track Select", "Car Select"];
+    const pageInstructions = [
+        "Choose how you want to play",
+        "Choose the track for the race",
+        "Choose your vehicle"
+    ];
+
+    ctx.font = "32px monospace";
+    ctx.fillText(pageTitles[menuPage], canvas.width/2, 240);
+
+    ctx.font = "18px monospace";
+    ctx.fillText(pageInstructions[menuPage], canvas.width/2, 270);
+
+    if(menuPage === 0){
+        modes.forEach((mode, i) => {
+            let y = 340 + i * 50;
+            ctx.fillStyle = selectedMode === i ? "#ffff00" : "#ffffff";
+            ctx.fillText(mode.name, canvas.width/2, y);
+        });
+    } else if(menuPage === 1){
+        maps.forEach((map, i) => {
+            let y = 340 + i * 50;
+            ctx.fillStyle = selectedMap === i ? "#ffff00" : "#ffffff";
+            ctx.fillText(map.name + " — " + map.finish + "m", canvas.width/2, y);
+        });
+    } else {
+        cars.forEach((car, i) => {
+            let y = 340 + i * 50;
+            ctx.fillStyle = selectedCar === i ? "#ffff00" : "#ffffff";
+            ctx.fillText(car.name + " (A:" + car.accel.toFixed(2) + ", T:" + car.turn.toFixed(2) + ", S:" + car.maxSpeed + ")", canvas.width/2, y);
+        });
+    }
+
+    ctx.font = "16px monospace";
+    ctx.fillStyle = "#00ffff";
+    let summary = "Mode: " + modes[selectedMode].name + " | Track: " + maps[selectedMap].name + " | Car: " + cars[selectedCar].name;
+    ctx.fillText(summary, canvas.width/2, canvas.height - 50);
+    ctx.textAlign = "left";
+}
+
+// =====================
+// MINIMAP (PLAYER + AI + FINISH)
+// =====================
+function drawMinimap(){
+
+    const size = 160;
+    let x0 = canvas.width - size - 10;
+    let y0 = 10;
+
+    ctx.fillStyle = "#000a";
+    ctx.fillRect(x0,y0,size,size);
+
+    // finish line
+    let finishX = x0 + (levelTarget - playerCar.x) * 0.01;
+    ctx.fillStyle = "#ff00ff";
+    ctx.fillRect(finishX, y0, 3, size);
+
+    // player
+    ctx.fillStyle = playerCar.color;
+    ctx.fillRect(x0 + size/2, y0 + size/2, 4, 4);
+
+    if(modes[selectedMode].multiplayer){
+        ctx.fillStyle = playerCar2.color;
+        let p2x = x0 + size/2 + (playerCar2.x - playerCar.x) * 0.01;
+        let p2y = y0 + size/2 + (playerCar2.y - playerCar.y) * 0.01;
+        ctx.fillRect(p2x, p2y, 4, 4);
+    }
+
+    // AI
+    bots.forEach(b => {
+        let bx = x0 + size/2 + (b.x - playerCar.x) * 0.01;
+        let by = y0 + size/2 + (b.y - playerCar.y) * 0.01;
+
+        ctx.fillStyle = b.color;
+        ctx.fillRect(bx, by, 3, 3);
+    });
 }
 
 // =====================
@@ -288,18 +705,26 @@ function drawCar(){
 function drawUI(){
 
     ctx.fillStyle = "#00ffff";
-    ctx.font = "18px monospace";
-    ctx.fillText(`Score: ${Math.floor(score)}`, 20, 30);
+    ctx.font = "16px monospace";
 
-    if(combo > 1){
-        ctx.fillStyle = "#ff00ff";
-        ctx.fillText(`Combo x${combo.toFixed(2)}`, 20, 55);
+    let mapName = maps[currentMapIndex % maps.length].name;
+    ctx.fillText("Mode: " + modes[selectedMode].name, 20, 25);
+    ctx.fillText("Track: " + mapName, 20, 45);
+    ctx.fillText("Score: " + Math.floor(score), 20, 65);
+    ctx.fillText("Distance: " + Math.floor(playerCar.x), 20, 85);
+
+    // Boost bar
+    ctx.fillStyle = "#333";
+    ctx.fillRect(20, 95, 100, 10);
+    ctx.fillStyle = "#00ff00";
+    ctx.fillRect(20, 95, playerCar.boost, 10);
+    ctx.fillStyle = "#00ffff";
+    ctx.fillText("Boost", 130, 105);
+
+    if(modes[selectedMode].multiplayer){
+        ctx.fillStyle = playerCar2.color;
+        ctx.fillText("Player 2 x: " + Math.floor(playerCar2.x), 20, 125);
     }
-
-    ctx.fillStyle = "#0ff";
-    ctx.fillRect(20, 70, car.boost * 5, 10);
-    ctx.strokeStyle = "#0ff";
-    ctx.strokeRect(20, 70, 200, 10);
 }
 
 // =====================
@@ -307,19 +732,33 @@ function drawUI(){
 // =====================
 function loop(){
 
-    ctx.fillStyle = "black";
-    ctx.fillRect(0,0,canvas.width,canvas.height);
+    if(gameState === 'menu'){
+        drawMenu();
+    } else if(gameState === 'playing'){
+        drawBackground();
+        drawMapObjects();
 
-    updateCar();
-    updateCamera();
+        updatePlayer();
+        if(modes[selectedMode].multiplayer) updatePlayer2();
+        updateBots();
+        updateParticles();
+        updateStars();
+        updateEngineSound();
+        updateCamera();
 
-    drawCity();   // NEW
-    drawRoad();
-    drawTrails();
-    drawCar();
-    drawUI();
+        drawRoad();
+        drawParticles();
+
+        bots.forEach(b => drawCar(b, b.color));
+        drawCar(playerCar, playerCar.color);
+        if(modes[selectedMode].multiplayer) drawCar(playerCar2, playerCar2.color);
+
+        drawUI();
+        drawMinimap();
+    }
 
     requestAnimationFrame(loop);
 }
 
+spawnBots();
 loop();
