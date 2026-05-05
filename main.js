@@ -29,6 +29,14 @@ let car = {
 };
 
 // =====================
+// GAME STATE
+// =====================
+let score = 0;
+let combo = 1;
+let driftTimer = 0;
+let drifting = false;
+
+// =====================
 // TRAILS
 // =====================
 let trails = [];
@@ -39,7 +47,7 @@ let trails = [];
 const ROAD_WIDTH = 200;
 
 // =====================
-// ROAD
+// ROAD FUNCTION
 // =====================
 function roadY(x){
     return Math.sin(x*0.01)*200 + Math.sin(x*0.003)*400;
@@ -86,16 +94,30 @@ function updateCar(){
 
     let lateral = car.vx * rightX + car.vy * rightY;
 
-    if(Math.abs(lateral) > 1){
-        // drift trail
+    drifting = Math.abs(lateral) > 1.2;
+
+    if(drifting){
+
+        driftTimer++;
+        combo += 0.01;
+
+        score += Math.abs(lateral) * combo * 0.1;
+
         trails.push({
             x: car.x,
             y: car.y,
             life: 1
         });
 
-        // gain boost from drifting
         car.boost += 0.02;
+
+    } else {
+
+        if(driftTimer > 10){
+            combo = 1;
+        }
+
+        driftTimer = 0;
     }
 
     car.vx -= lateral * rightX * (1 - driftFactor);
@@ -124,7 +146,7 @@ function updateCamera(){
 }
 
 // =====================
-// GLOW FUNCTION
+// GLOW
 // =====================
 function glow(color, blur){
     ctx.shadowColor = color;
@@ -289,6 +311,28 @@ function drawMinimap(){
 }
 
 // =====================
+// UI
+// =====================
+function drawUI(){
+
+    ctx.fillStyle = "#00ffff";
+    ctx.font = "18px monospace";
+    ctx.fillText(`Score: ${Math.floor(score)}`, 20, 30);
+
+    if(combo > 1){
+        ctx.fillStyle = "#ff00ff";
+        ctx.fillText(`Combo x${combo.toFixed(2)}`, 20, 55);
+    }
+
+    // boost bar
+    ctx.fillStyle = "#0ff";
+    ctx.fillRect(20, 70, car.boost * 5, 10);
+
+    ctx.strokeStyle = "#0ff";
+    ctx.strokeRect(20, 70, 200, 10);
+}
+
+// =====================
 // LOOP
 // =====================
 function loop(){
@@ -304,6 +348,7 @@ function loop(){
     drawTrails();
     drawCar();
     drawMinimap();
+    drawUI();
 
     requestAnimationFrame(loop);
 }
