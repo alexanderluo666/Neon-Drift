@@ -20,10 +20,8 @@ let cam = { x: 0, y: 0 };
 // CAR
 // =====================
 let car = {
-    x: 0,
-    y: 0,
-    vx: 0,
-    vy: 0,
+    x: 0, y: 0,
+    vx: 0, vy: 0,
     angle: 0,
     boost: 0
 };
@@ -42,16 +40,46 @@ let drifting = false;
 let trails = [];
 
 // =====================
-// SETTINGS
+// ROAD
 // =====================
 const ROAD_WIDTH = 200;
 
-// =====================
-// ROAD FUNCTION
-// =====================
 function roadY(x){
     return Math.sin(x*0.01)*200 + Math.sin(x*0.003)*400;
 }
+
+// =====================
+// AUDIO SYSTEM
+// =====================
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+let engineOsc = audioCtx.createOscillator();
+let engineGain = audioCtx.createGain();
+
+engineOsc.type = "sawtooth";
+engineOsc.connect(engineGain);
+engineGain.connect(audioCtx.destination);
+
+engineGain.gain.value = 0.05;
+engineOsc.start();
+
+// drift noise
+let noise = audioCtx.createBufferSource();
+let noiseBuffer = audioCtx.createBuffer(1, 44100, 44100);
+let data = noiseBuffer.getChannelData(0);
+
+for(let i=0;i<data.length;i++){
+    data[i] = Math.random()*2-1;
+}
+
+noise.buffer = noiseBuffer;
+
+let noiseGain = audioCtx.createGain();
+noise.connect(noiseGain);
+noiseGain.connect(audioCtx.destination);
+noise.loop = true;
+noiseGain.gain.value = 0;
+noise.start();
 
 // =====================
 // PHYSICS
@@ -88,7 +116,6 @@ function updateCar(){
     if(keys["a"]) car.angle -= turnSpeed * speed * 0.1;
     if(keys["d"]) car.angle += turnSpeed * speed * 0.1;
 
-    // DRIFT
     let rightX = Math.cos(car.angle + Math.PI/2);
     let rightY = Math.sin(car.angle + Math.PI/2);
 
@@ -97,33 +124,20 @@ function updateCar(){
     drifting = Math.abs(lateral) > 1.2;
 
     if(drifting){
-
         driftTimer++;
         combo += 0.01;
-
         score += Math.abs(lateral) * combo * 0.1;
 
-        trails.push({
-            x: car.x,
-            y: car.y,
-            life: 1
-        });
-
+        trails.push({x:car.x,y:car.y,life:1});
         car.boost += 0.02;
-
     } else {
-
-        if(driftTimer > 10){
-            combo = 1;
-        }
-
+        if(driftTimer > 10) combo = 1;
         driftTimer = 0;
     }
 
     car.vx -= lateral * rightX * (1 - driftFactor);
     car.vy -= lateral * rightY * (1 - driftFactor);
 
-    // OFFROAD
     let dist = Math.abs(car.y - roadY(car.x));
     if(dist > ROAD_WIDTH/2){
         car.vx *= 0.93;
@@ -135,6 +149,12 @@ function updateCar(){
 
     car.x += car.vx;
     car.y += car.vy;
+
+    // =====================
+    // SOUND UPDATE
+    // =====================
+    engineOsc.frequency.value = 100 + speed * 10;
+    noiseGain.gain.value = drifting ? 0.05 : 0;
 }
 
 // =====================
@@ -146,44 +166,41 @@ function updateCamera(){
 }
 
 // =====================
+// CITY GENERATION
+// =====================
+function buildingHeight(x){
+    return (Math.sin(x*0.002)+1)*200 + 100;
+}
+
+// =====================
+// DRAW CITY
+// =====================
+function drawCity(){
+
+    let baseY = canvas.height/2 - (cam.y + 400);
+
+    for(let i=-20;i<20;i++){
+
+        let worldX = Math.floor((cam.x/200)+i)*200;
+        let screenX = worldX - cam.x + canvas.width/2;
+
+        let h = buildingHeight(worldX);
+
+        ctx.fillStyle = "#050505";
+        ctx.fillRect(screenX, baseY - h, 180, h);
+
+        // neon edges
+        ctx.strokeStyle = "#0ff";
+        ctx.strokeRect(screenX, baseY - h, 180, h);
+    }
+}
+
+// =====================
 // GLOW
 // =====================
 function glow(color, blur){
     ctx.shadowColor = color;
     ctx.shadowBlur = blur;
-}
-
-// =====================
-// GRID
-// =====================
-function drawGrid(){
-
-    const size = 80;
-    ctx.strokeStyle = "#0ff2";
-
-    let startX = Math.floor((cam.x - canvas.width/2)/size);
-    let endX   = Math.floor((cam.x + canvas.width/2)/size);
-
-    let startY = Math.floor((cam.y - canvas.height/2)/size);
-    let endY   = Math.floor((cam.y + canvas.height/2)/size);
-
-    for(let x=startX;x<=endX;x++){
-        let sx = x*size - cam.x + canvas.width/2;
-
-        ctx.beginPath();
-        ctx.moveTo(sx,0);
-        ctx.lineTo(sx,canvas.height);
-        ctx.stroke();
-    }
-
-    for(let y=startY;y<=endY;y++){
-        let sy = y*size - cam.y + canvas.height/2;
-
-        ctx.beginPath();
-        ctx.moveTo(0,sy);
-        ctx.lineTo(canvas.width,sy);
-        ctx.stroke();
-    }
 }
 
 // =====================
@@ -231,20 +248,17 @@ function drawRoad(){
 // TRAILS
 // =====================
 function drawTrails(){
-
     trails.forEach(t=>{
         let x = t.x - cam.x + canvas.width/2;
         let y = t.y - cam.y + canvas.height/2;
 
         glow("#00ffff",10);
-        ctx.fillStyle = "#00ffff";
         ctx.fillRect(x,y,3,3);
 
         t.life -= 0.02;
     });
 
-    trails = trails.filter(t=>t.life > 0);
-
+    trails = trails.filter(t=>t.life>0);
     ctx.shadowBlur = 0;
 }
 
@@ -269,48 +283,6 @@ function drawCar(){
 }
 
 // =====================
-// MINIMAP
-// =====================
-function drawMinimap(){
-
-    const size = 150;
-    const scaleMini = 0.1;
-
-    let x0 = canvas.width - size - 10;
-    let y0 = 10;
-
-    ctx.fillStyle = "#000a";
-    ctx.fillRect(x0,y0,size,size);
-
-    ctx.strokeStyle = "#0ff";
-    ctx.strokeRect(x0,y0,size,size);
-
-    ctx.beginPath();
-
-    for(let i=0;i<size;i++){
-        let worldX = car.x + (i - size/2)/scaleMini;
-        let worldY = roadY(worldX);
-
-        let mx = x0 + i;
-        let my = y0 + size/2 - (worldY - car.y)*scaleMini;
-
-        if(i===0) ctx.moveTo(mx,my);
-        else ctx.lineTo(mx,my);
-    }
-
-    glow("#ff00ff",10);
-    ctx.strokeStyle = "#ff00ff";
-    ctx.stroke();
-
-    ctx.shadowBlur = 0;
-
-    ctx.fillStyle = "#00ffff";
-    ctx.beginPath();
-    ctx.arc(x0+size/2,y0+size/2,4,0,Math.PI*2);
-    ctx.fill();
-}
-
-// =====================
 // UI
 // =====================
 function drawUI(){
@@ -324,10 +296,8 @@ function drawUI(){
         ctx.fillText(`Combo x${combo.toFixed(2)}`, 20, 55);
     }
 
-    // boost bar
     ctx.fillStyle = "#0ff";
     ctx.fillRect(20, 70, car.boost * 5, 10);
-
     ctx.strokeStyle = "#0ff";
     ctx.strokeRect(20, 70, 200, 10);
 }
@@ -343,11 +313,10 @@ function loop(){
     updateCar();
     updateCamera();
 
-    drawGrid();
+    drawCity();   // NEW
     drawRoad();
     drawTrails();
     drawCar();
-    drawMinimap();
     drawUI();
 
     requestAnimationFrame(loop);
