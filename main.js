@@ -23,6 +23,26 @@ let keys = {};
 window.addEventListener("keydown", e => {
     if(!audioContext) initAudio();
     keys[e.key.toLowerCase()] = true;
+    
+    if(minimapZoomed){
+        if(e.key === 'Escape' || e.key === 'm' || e.key === 'M'){
+            minimapZoomed = false;
+        }
+        if(e.key === 'ArrowLeft'){
+            minimapOffsetX -= 100;
+        }
+        if(e.key === 'ArrowRight'){
+            minimapOffsetX += 100;
+        }
+        if(e.key === 'ArrowUp'){
+            minimapOffsetY -= 100;
+        }
+        if(e.key === 'ArrowDown'){
+            minimapOffsetY += 100;
+        }
+        return;
+    }
+    
     if(gameState === 'menu'){
         if(e.key === 'ArrowLeft'){
             menuPage = Math.max(0, menuPage - 1);
@@ -74,6 +94,32 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
 
 // =====================
+// MOUSE INPUT
+// =====================
+let minimapZoomed = false;
+let lastMinimapClickTime = 0;
+
+canvas.addEventListener("click", e => {
+    if(gameState !== 'playing') return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    
+    const minimapSize = 160;
+    const minimapX0 = canvas.width - minimapSize - 10;
+    const minimapY0 = 10;
+    
+    const isClickOnMinimap = clickX >= minimapX0 && clickX <= minimapX0 + minimapSize &&
+                             clickY >= minimapY0 && clickY <= minimapY0 + minimapSize;
+    
+    if(isClickOnMinimap){
+        minimapZoomed = !minimapZoomed;
+        lastMinimapClickTime = Date.now();
+    }
+});
+
+// =====================
 // CAMERA
 // =====================
 let cam = { x: 0, y: 0 };
@@ -81,7 +127,7 @@ let cam = { x: 0, y: 0 };
 // =====================
 // GAME STATE
 // =====================
-let gameState = 'menu'; // 'menu', 'playing'
+let gameState = 'menu'; // 'menu', 'playing', 'minimapZoom'
 let level = 1;
 let score = 0;
 let selectedMode = 1;
@@ -90,6 +136,8 @@ let selectedCar = 0;
 let menuPage = 0;
 let currentMapIndex = 0;
 let levelTarget = 8000;
+let minimapOffsetX = 0;
+let minimapOffsetY = 0;
 
 // =====================
 // GAME MODES
@@ -665,39 +713,141 @@ function drawMenu(){
 // MINIMAP (PLAYER + AI + FINISH)
 // =====================
 function drawMinimap(){
-
     const size = 160;
     let x0 = canvas.width - size - 10;
     let y0 = 10;
 
+    ctx.save();
     ctx.fillStyle = "#000a";
-    ctx.fillRect(x0,y0,size,size);
+    ctx.fillRect(x0, y0, size, size);
 
-    // finish line
+    // Draw road path
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for(let i = playerCar.x - 400; i < playerCar.x + 1200; i += 40){
+        let roadY_val = roadY(i);
+        let mmx = x0 + size/2 + (i - playerCar.x) * 0.01;
+        let mmy = y0 + size/2 + (roadY_val - playerCar.y) * 0.01;
+        if(i === playerCar.x - 400) ctx.moveTo(mmx, mmy);
+        else ctx.lineTo(mmx, mmy);
+    }
+    ctx.stroke();
+
+    // Finish line
     let finishX = x0 + (levelTarget - playerCar.x) * 0.01;
     ctx.fillStyle = "#ff00ff";
     ctx.fillRect(finishX, y0, 3, size);
 
-    // player
+    // Player
     ctx.fillStyle = playerCar.color;
-    ctx.fillRect(x0 + size/2, y0 + size/2, 4, 4);
+    ctx.fillRect(x0 + size/2 - 2, y0 + size/2 - 2, 4, 4);
 
+    // Player 2
     if(modes[selectedMode].multiplayer){
         ctx.fillStyle = playerCar2.color;
         let p2x = x0 + size/2 + (playerCar2.x - playerCar.x) * 0.01;
         let p2y = y0 + size/2 + (playerCar2.y - playerCar.y) * 0.01;
-        ctx.fillRect(p2x, p2y, 4, 4);
+        ctx.fillRect(p2x - 2, p2y - 2, 4, 4);
     }
 
     // AI
     bots.forEach(b => {
         let bx = x0 + size/2 + (b.x - playerCar.x) * 0.01;
         let by = y0 + size/2 + (b.y - playerCar.y) * 0.01;
-
         ctx.fillStyle = b.color;
-        ctx.fillRect(bx, by, 3, 3);
+        ctx.fillRect(bx - 1.5, by - 1.5, 3, 3);
     });
+
+    // Border
+    ctx.strokeStyle = "#00ffff";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x0, y0, size, size);
+
+    ctx.restore();
 }
+
+function drawMinimapZoomed(){
+    const circleRadius = Math.min(canvas.width, canvas.height) / 2.5;
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    // Background
+    ctx.fillStyle = "#000011";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw circular minimap
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, circleRadius, 0, Math.PI * 2);
+    ctx.fillStyle = "#000a";
+    ctx.fill();
+
+    // Draw road path in circle
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for(let i = playerCar.x - 800; i < playerCar.x + 1600; i += 40){
+        let roadY_val = roadY(i);
+        let mmx = centerX + (i - playerCar.x) * 0.02;
+        let mmy = centerY + (roadY_val - playerCar.y) * 0.02;
+        if(i === playerCar.x - 800) ctx.moveTo(mmx, mmy);
+        else ctx.lineTo(mmx, mmy);
+    }
+    ctx.stroke();
+
+    // Finish line (circle around it)
+    let finishX_val = centerX + (levelTarget - playerCar.x) * 0.02;
+    ctx.strokeStyle = "#ff00ff";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(finishX_val, centerY, 15, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Player (large)
+    ctx.fillStyle = playerCar.color;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, 8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Player 2
+    if(modes[selectedMode].multiplayer){
+        ctx.fillStyle = playerCar2.color;
+        let p2x = centerX + (playerCar2.x - playerCar.x) * 0.02;
+        let p2y = centerY + (playerCar2.y - playerCar.y) * 0.02;
+        ctx.beginPath();
+        ctx.arc(p2x, p2y, 8, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // AI
+    bots.forEach(b => {
+        let bx = centerX + (b.x - playerCar.x) * 0.02;
+        let by = centerY + (b.y - playerCar.y) * 0.02;
+        ctx.fillStyle = b.color;
+        ctx.beginPath();
+        ctx.arc(bx, by, 6, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    // Outer circle border
+    ctx.strokeStyle = "#00ffff";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, circleRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.restore();
+
+    // Instructions
+    ctx.fillStyle = "#00ffff";
+    ctx.font = "18px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("Minimap View - Press ESC or M to close", canvas.width / 2, 40);
+    ctx.fillText("Press Left/Right to scroll, or click minimap to close", canvas.width / 2, canvas.height - 40);
+    ctx.textAlign = "left";
+}
+
 
 // =====================
 // UI
@@ -754,7 +904,12 @@ function loop(){
         if(modes[selectedMode].multiplayer) drawCar(playerCar2, playerCar2.color);
 
         drawUI();
-        drawMinimap();
+        
+        if(minimapZoomed){
+            drawMinimapZoomed();
+        } else {
+            drawMinimap();
+        }
     }
 
     requestAnimationFrame(loop);
